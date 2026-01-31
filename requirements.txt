@@ -1,0 +1,4 @@
+moviepy>=1.0.3
+imagemagick
+numpy>=1.19.0
+Pillow>=8.0.0
