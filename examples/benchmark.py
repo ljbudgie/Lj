@@ -131,15 +131,22 @@ def main():
     n = 25  # Keep it reasonable for recursive version
     
     inefficient_time, result1 = benchmark(fibonacci_recursive, n)
-    fibonacci_cached.cache_clear()  # Clear cache
-    optimized_time, result2 = benchmark(fibonacci_cached, n)
-    iterative_time, result3 = benchmark(fibonacci_iterative, n)
+    
+    # Test with cold cache (first call)
+    fibonacci_cached.cache_clear()
+    cold_cache_time, result2 = benchmark(fibonacci_cached, n)
+    
+    # Test with warm cache (subsequent calls)
+    warm_cache_time, result3 = benchmark(fibonacci_cached, n, iterations=100)
+    
+    iterative_time, result4 = benchmark(fibonacci_iterative, n)
     
     print(f"Calculating fibonacci({n})")
     print(f"Result: {result1}")
-    print(f"\nRecursive:  {format_time(inefficient_time)}")
-    print(f"Cached:     {format_time(optimized_time)} ({inefficient_time/optimized_time:.2f}x faster)")
-    print(f"Iterative:  {format_time(iterative_time)} ({inefficient_time/iterative_time:.2f}x faster)")
+    print(f"\nRecursive:      {format_time(inefficient_time)}")
+    print(f"Cached (cold):  {format_time(cold_cache_time)} ({inefficient_time/cold_cache_time:.2f}x faster)")
+    print(f"Cached (warm):  {format_time(warm_cache_time)} ({inefficient_time/warm_cache_time:.2f}x faster)")
+    print(f"Iterative:      {format_time(iterative_time)} ({inefficient_time/iterative_time:.2f}x faster)")
     
     # Test 6: Data processing
     print("\n" + "=" * 70)

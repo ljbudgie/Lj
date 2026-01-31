@@ -163,20 +163,8 @@ def sanitize_text(text):
 
 **Optimized Solution:**
 ```python
+# Best approach: Use str.translate() for single-pass replacement
 def sanitize_text(text):
-    replacements = {
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#x27;'
-    }
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    return text
-
-# Or even better with str.translate():
-def sanitize_text_fast(text):
     translation_table = str.maketrans({
         '&': '&amp;',
         '<': '&lt;',
@@ -185,9 +173,19 @@ def sanitize_text_fast(text):
         "'": '&#x27;'
     })
     return text.translate(translation_table)
+
+# Alternative: If order matters, handle ampersand first
+def sanitize_text_ordered(text):
+    # Must replace '&' first to avoid double-encoding
+    text = text.replace('&', '&amp;')
+    text = text.replace('<', '&lt;')
+    text = text.replace('>', '&gt;')
+    text = text.replace('"', '&quot;')
+    text = text.replace("'", '&#x27;')
+    return text
 ```
 
-**Improvement:** More maintainable and potentially faster with translate().
+**Improvement:** translate() does single-pass replacement avoiding order issues, and is much faster.
 
 ---
 

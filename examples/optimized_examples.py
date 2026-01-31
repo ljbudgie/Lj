@@ -138,19 +138,22 @@ class SearchOptimizer:
     """
     OPTIMIZED: Pre-processes data for repeated searches
     Trades space for time when doing multiple searches
+    Note: search() returns original index, binary_search() returns sorted index
     """
     
     def __init__(self, data):
-        self.data = sorted(data)
-        self.index_map = {value: idx for idx, value in enumerate(data)}
+        self.original_data = list(data)
+        self.sorted_data = sorted(data)
+        # Map value to original index
+        self.value_to_index = {value: idx for idx, value in enumerate(self.original_data)}
     
     def search(self, target):
-        """O(1) lookup using hash map"""
-        return self.index_map.get(target, -1)
+        """O(1) lookup using hash map, returns original index"""
+        return self.value_to_index.get(target, -1)
     
     def binary_search(self, target):
-        """O(log n) lookup on sorted data"""
-        return binary_search_optimized(self.data, target)
+        """O(log n) lookup on sorted data, returns sorted index"""
+        return binary_search_optimized(self.sorted_data, target)
 
 
 def batch_process_generator(items, batch_size=100):
