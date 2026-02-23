@@ -1,0 +1,299 @@
+name: Clawbot – PR Review & Contribution Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  ai-pr-review:
+    name: AI-Enhanced PR Review
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Run AI-enhanced PR checks
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import os, requests, yaml
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          pr_cfg = cfg["contribution_pipeline"]["pr_review"]
+          if not pr_cfg.get("enabled", False):
+              print("PR review disabled.")
+              exit(0)
+
+          token = os.environ.get("GITHUB_TOKEN", "")
+          repo = os.environ.get("REPO", "")
+          pr_number = os.environ.get("PR_NUMBER", "")
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          # Fetch PR details
+          resp = requests.get(
+              f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+              headers=headers, timeout=15
+          )
+          if not resp.ok:
+              print(f"Could not fetch PR details: HTTP {resp.status_code}")
+              exit(0)
+
+          pr = resp.json()
+          issues = []
+          suggestions = []
+
+          # Check 1: issue linking
+          body = (pr.get("body") or "").lower()
+          if "closes #" not in body and "fixes #" not in body and "resolves #" not in body:
+              issues.append("⚠️ **Issue Linking**: This PR does not appear to reference a related issue. "
+                            "Consider adding `Closes #<issue>` to the PR description.")
+
+          # Check 2: accessibility compliance (check for aria/alt-text in changed files)
+          files_resp = requests.get(
+              f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files",
+              headers=headers, timeout=15
+          )
+          accessibility_ok = True
+          if files_resp.ok:
+              changed_files = [f["filename"] for f in files_resp.json()]
+              html_files = [f for f in changed_files if f.endswith((".html", ".htm", ".jsx", ".tsx"))]
+              if html_files:
+                  suggestions.append(
+                      f"🔍 **Accessibility Compliance**: HTML/JSX files changed ({', '.join(html_files)}). "
+                      "Please verify `alt` attributes on images, ARIA roles, and color contrast ratios."
+                  )
+
+          # Build review comment
+          comment_lines = ["## 🤖 Clawbot PR Review\n"]
+          if issues:
+              comment_lines.append("### Issues Found\n")
+              comment_lines.extend(f"- {i}\n" for i in issues)
+          if suggestions:
+              comment_lines.append("### Suggestions\n")
+              comment_lines.extend(f"- {s}\n" for s in suggestions)
+          if not issues and not suggestions:
+              comment_lines.append("✅ All automated checks passed. Great work!\n")
+
+          comment_body = "".join(comment_lines)
+
+          if pr_cfg.get("auto_comment", False):
+              post_resp = requests.post(
+                  f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
+                  json={"body": comment_body},
+                  headers=headers, timeout=15
+              )
+              if post_resp.ok:
+                  print(f"[Clawbot] Review comment posted on PR #{pr_number}.")
+              else:
+                  print(f"[WARNING] Could not post comment: HTTP {post_resp.status_code}")
+          else:
+              print(comment_body)
+          EOF
+
+  contributor-assistant:
+    name: Contributor Assistant – Label & Tag PRs
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Tag PR with suggested labels
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import os, requests, yaml
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          assistant_cfg = cfg["contribution_pipeline"]["contributor_assistant"]
+          if not assistant_cfg.get("enabled", False):
+              print("Contributor assistant disabled.")
+              exit(0)
+
+          token = os.environ.get("GITHUB_TOKEN", "")
+          repo = os.environ.get("REPO", "")
+          pr_number = os.environ.get("PR_NUMBER", "")
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          # Fetch changed files
+          files_resp = requests.get(
+              f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files",
+              headers=headers, timeout=15
+          )
+          if not files_resp.ok:
+              print(f"Could not fetch PR files: HTTP {files_resp.status_code}")
+              exit(0)
+
+          changed_files = [f["filename"] for f in files_resp.json()]
+          labels_to_add = []
+
+          # Suggest labels based on changed paths
+          if any(f.startswith("docs/") for f in changed_files):
+              labels_to_add.append("documentation")
+          if any(f.startswith(".github/workflows/") for f in changed_files):
+              labels_to_add.append("ci/cd")
+          if any(f.startswith("config/") for f in changed_files):
+              labels_to_add.append("configuration")
+          if any(f.endswith((".html", ".htm", ".css", ".jsx", ".tsx")) for f in changed_files):
+              labels_to_add.append("accessibility")
+
+          # Ensure labels exist, then apply
+          for label in labels_to_add:
+              # Check/create label
+              check = requests.get(
+                  f"https://api.github.com/repos/{repo}/labels/{label}",
+                  headers=headers, timeout=10
+              )
+              if check.status_code == 404:
+                  requests.post(
+                      f"https://api.github.com/repos/{repo}/labels",
+                      json={"name": label, "color": "0075ca"},
+                      headers=headers, timeout=10
+                  )
+
+          if labels_to_add:
+              add_resp = requests.post(
+                  f"https://api.github.com/repos/{repo}/issues/{pr_number}/labels",
+                  json={"labels": labels_to_add},
+                  headers=headers, timeout=15
+              )
+              if add_resp.ok:
+                  print(f"[Clawbot] Added labels to PR #{pr_number}: {labels_to_add}")
+              else:
+                  print(f"[WARNING] Could not add labels: HTTP {add_resp.status_code}")
+          else:
+              print("[Clawbot] No labels to add for this PR.")
+          EOF
+
+  gamified-badges:
+    name: Gamified Contribution Badges
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Award accessibility badge if applicable
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import os, requests, yaml
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          gamification = cfg["contribution_pipeline"]["gamification"]
+          if not gamification.get("enabled", False):
+              print("Gamification disabled.")
+              exit(0)
+
+          token = os.environ.get("GITHUB_TOKEN", "")
+          repo = os.environ.get("REPO", "")
+          pr_number = os.environ.get("PR_NUMBER", "")
+          author = os.environ.get("PR_AUTHOR", "")
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          # Fetch changed files to determine badge eligibility
+          files_resp = requests.get(
+              f"https://api.github.com/repos/{repo}/pulls/{pr_number}/files",
+              headers=headers, timeout=15
+          )
+          if not files_resp.ok:
+              exit(0)
+
+          changed_files = [f["filename"] for f in files_resp.json()]
+          badges_earned = []
+          badge_cfg = gamification.get("badges", {})
+
+          # Accessibility badge
+          if any(f.endswith((".html", ".htm", ".css")) for f in changed_files):
+              badge = badge_cfg.get("accessibility_champion", {})
+              if badge:
+                  badges_earned.append(badge["label"])
+
+          # Translation/multilingual badge
+          if any("translations" in f or f.startswith("docs/translations") for f in changed_files):
+              badge = badge_cfg.get("multilingual_hero", {})
+              if badge:
+                  badges_earned.append(badge["label"])
+
+          # Dependency badge
+          pr_title_resp = requests.get(
+              f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+              headers=headers, timeout=15
+          )
+          if pr_title_resp.ok:
+              pr_data = pr_title_resp.json()
+              title = (pr_data.get("title") or "").lower()
+              if "bump" in title or "update" in title or "upgrade" in title:
+                  badge = badge_cfg.get("dependency_guardian", {})
+                  if badge:
+                      badges_earned.append(badge["label"])
+
+          if badges_earned:
+              labels_resp = requests.post(
+                  f"https://api.github.com/repos/{repo}/issues/{pr_number}/labels",
+                  json={"labels": badges_earned},
+                  headers=headers, timeout=15
+              )
+              congrats = (
+                  f"🎉 @{author} has earned the following badge(s) for this contribution:\n\n"
+                  + "\n".join(f"- **{b}**" for b in badges_earned)
+                  + "\n\nThank you for making this project more accessible and inclusive! 🙌"
+              )
+              requests.post(
+                  f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
+                  json={"body": congrats},
+                  headers=headers, timeout=15
+              )
+              print(f"[Clawbot] Badges awarded to {author}: {badges_earned}")
+          else:
+              print(f"[Clawbot] No badges to award for PR #{pr_number}.")
+          EOF

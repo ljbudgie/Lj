@@ -1,0 +1,176 @@
+name: Clawbot – Self-Healing Workflows
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  monitor-workflows:
+    name: Monitor Workflow Health
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Check recent workflow run failures
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import os, requests, yaml
+          from datetime import datetime, timezone, timedelta
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          sh_cfg = cfg["ecosystem"]["self_healing"]
+          if not sh_cfg.get("enabled", False):
+              print("Self-healing disabled.")
+              exit(0)
+
+          token = os.environ.get("GITHUB_TOKEN", "")
+          repo = os.environ.get("REPO", "")
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          # Fetch workflows
+          wf_resp = requests.get(
+              f"https://api.github.com/repos/{repo}/actions/workflows",
+              headers=headers, timeout=15
+          )
+          if not wf_resp.ok:
+              print(f"Could not fetch workflows: HTTP {wf_resp.status_code}")
+              exit(0)
+
+          workflows = wf_resp.json().get("workflows", [])
+          failed_workflows = []
+          since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+
+          for wf in workflows:
+              runs_resp = requests.get(
+                  f"https://api.github.com/repos/{repo}/actions/workflows/{wf['id']}/runs"
+                  f"?per_page=5&created>={since}",
+                  headers=headers, timeout=15
+              )
+              if not runs_resp.ok:
+                  continue
+              runs = runs_resp.json().get("workflow_runs", [])
+              recent_failures = [
+                  r for r in runs
+                  if r.get("conclusion") in ("failure", "timed_out", "cancelled")
+              ]
+              if recent_failures:
+                  failed_workflows.append({
+                      "name": wf["name"],
+                      "failures": len(recent_failures),
+                      "last_run_url": recent_failures[0].get("html_url", ""),
+                  })
+
+          if failed_workflows:
+              print(f"[Clawbot] Self-healing: {len(failed_workflows)} workflow(s) with recent failures:")
+              for fw in failed_workflows:
+                  print(f"  - {fw['name']}: {fw['failures']} failure(s) — {fw['last_run_url']}")
+
+              if sh_cfg.get("notify_on_failure", False):
+                  body_lines = [
+                      "## 🚨 Clawbot Self-Healing Alert\n",
+                      "The following workflows have recent failures:\n",
+                  ]
+                  for fw in failed_workflows:
+                      body_lines.append(
+                          f"- **{fw['name']}**: {fw['failures']} failure(s) — [View run]({fw['last_run_url']})\n"
+                      )
+                  body_lines.append(
+                      "\nClawbot will attempt to re-trigger failed workflows if `auto_retry` is enabled.\n"
+                  )
+                  issue_resp = requests.post(
+                      f"https://api.github.com/repos/{repo}/issues",
+                      json={
+                          "title": "🚨 Clawbot: Workflow failures detected",
+                          "body": "".join(body_lines),
+                          "labels": ["bug", "automated"],
+                      },
+                      headers=headers, timeout=15
+                  )
+                  if issue_resp.ok:
+                      print(f"[Clawbot] Issue created: {issue_resp.json().get('html_url', '')}")
+          else:
+              print("[Clawbot] All workflows healthy in the last 24 hours. ✅")
+          EOF
+
+  auto-retry-failed:
+    name: Auto-Retry Failed Workflows
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Re-trigger failed workflow runs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import os, requests, yaml
+          from datetime import datetime, timezone, timedelta
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          sh_cfg = cfg["ecosystem"]["self_healing"]
+          if not sh_cfg.get("auto_retry", False):
+              print("Auto-retry disabled.")
+              exit(0)
+
+          max_retries = sh_cfg.get("max_retries", 3)
+          token = os.environ.get("GITHUB_TOKEN", "")
+          repo = os.environ.get("REPO", "")
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          since = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+
+          runs_resp = requests.get(
+              f"https://api.github.com/repos/{repo}/actions/runs"
+              f"?status=failure&per_page=10&created>={since}",
+              headers=headers, timeout=15
+          )
+          if not runs_resp.ok:
+              print(f"Could not fetch runs: HTTP {runs_resp.status_code}")
+              exit(0)
+
+          runs = runs_resp.json().get("workflow_runs", [])
+          retried = 0
+          for run in runs:
+              if run.get("run_attempt", 1) < max_retries:
+                  retry_resp = requests.post(
+                      f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/rerun-failed-jobs",
+                      headers=headers, timeout=15
+                  )
+                  if retry_resp.status_code in (201, 204):
+                      print(f"[Clawbot] Retried run #{run['id']} ({run.get('name', 'unknown')})")
+                      retried += 1
+
+          print(f"[Clawbot] Auto-retry complete. {retried} run(s) re-triggered.")
+          EOF

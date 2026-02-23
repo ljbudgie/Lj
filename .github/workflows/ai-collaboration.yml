@@ -1,0 +1,174 @@
+name: Clawbot – AI Collaboration
+
+on:
+  schedule:
+    - cron: '0 8 * * *'    # Daily at 08:00 UTC
+  workflow_dispatch:
+
+jobs:
+  intelligent-suggestions:
+    name: Intelligent Decision Making
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Analyze repository and suggest actions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HUGGINGFACE_API_TOKEN: ${{ secrets.HUGGINGFACE_API_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import yaml, os, json, requests
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          idm = cfg["ai_collaboration"]["intelligent_decision_making"]
+          if not idm.get("enabled", False):
+              print("Intelligent decision making is disabled.")
+              exit(0)
+
+          threshold = idm.get("suggestion_threshold", 0.75)
+          actions = idm.get("actions", [])
+
+          repo = os.environ.get("REPO", "")
+          token = os.environ.get("GITHUB_TOKEN", "")
+          hf_token = os.environ.get("HUGGINGFACE_API_TOKEN", "")
+
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+          base_url = f"https://api.github.com/repos/{repo}"
+
+          suggestions = []
+
+          # Check for stale issues (open > 30 days, no activity)
+          if "stale_issue_comment" in actions:
+              resp = requests.get(f"{base_url}/issues?state=open&per_page=100", headers=headers)
+              if resp.ok:
+                  from datetime import datetime, timezone
+                  issues = resp.json()
+                  for issue in issues:
+                      if "pull_request" in issue:
+                          continue
+                      updated = datetime.fromisoformat(issue["updated_at"].replace("Z", "+00:00"))
+                      age_days = (datetime.now(timezone.utc) - updated).days
+                      if age_days > 30:
+                          suggestions.append({
+                              "type": "stale_issue",
+                              "issue_number": issue["number"],
+                              "title": issue["title"],
+                              "age_days": age_days,
+                          })
+
+          if suggestions:
+              print(f"[Clawbot] Suggestions ({len(suggestions)}):")
+              for s in suggestions:
+                  print(f"  - {s}")
+          else:
+              print("[Clawbot] No actionable suggestions at this time.")
+          EOF
+
+  huggingface-integration:
+    name: Hugging Face Model Health Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Check Hugging Face endpoint availability
+        env:
+          HUGGINGFACE_API_TOKEN: ${{ secrets.HUGGINGFACE_API_TOKEN }}
+        run: |
+          python3 - <<'EOF'
+          import yaml, os, requests
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          hf_cfg = cfg["ai_collaboration"]["hugging_face"]
+          if not hf_cfg.get("enabled", False):
+              print("Hugging Face integration disabled.")
+              exit(0)
+
+          model = hf_cfg.get("model", "")
+          token = os.environ.get("HUGGINGFACE_API_TOKEN", "")
+
+          if not token:
+              print("[WARNING] HUGGINGFACE_API_TOKEN not set — skipping live check.")
+              exit(0)
+
+          url = f"https://api-inference.huggingface.co/models/{model}"
+          headers = {"Authorization": f"Bearer {token}"}
+          resp = requests.get(url, headers=headers, timeout=15)
+          if resp.status_code == 200:
+              print(f"[OK] Hugging Face model '{model}' is reachable.")
+          else:
+              print(f"[WARNING] Model '{model}' returned HTTP {resp.status_code}.")
+          EOF
+
+  deepl-integration:
+    name: DeepL Translation Health Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Check DeepL endpoint availability
+        env:
+          DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
+        run: |
+          python3 - <<'EOF'
+          import yaml, os, requests
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          deepl_cfg = cfg["ai_collaboration"]["deepl"]
+          if not deepl_cfg.get("enabled", False):
+              print("DeepL integration disabled.")
+              exit(0)
+
+          api_key = os.environ.get("DEEPL_API_KEY", "")
+          if not api_key:
+              print("[WARNING] DEEPL_API_KEY not set — skipping live check.")
+              exit(0)
+
+          url = "https://api-free.deepl.com/v2/usage"
+          headers = {"Authorization": f"DeepL-Auth-Key {api_key}"}
+          resp = requests.get(url, headers=headers, timeout=15)
+          if resp.status_code == 200:
+              data = resp.json()
+              print(f"[OK] DeepL usage: {data.get('character_count', 0)}/{data.get('character_limit', 0)} characters.")
+          else:
+              print(f"[WARNING] DeepL returned HTTP {resp.status_code}.")
+          EOF
