@@ -1,0 +1,202 @@
+name: Inclusive Documentation Automation
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '**.md'
+      - '**.png'
+      - '**.jpg'
+      - '**.jpeg'
+      - '**.gif'
+      - '**.svg'
+      - '**.webp'
+      - '**.mp4'
+      - '**.webm'
+  push:
+    branches: ['main', 'master']
+    paths:
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-alt-text:
+    name: Check Images for Alt Text
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check Markdown images for alt text
+        id: check_alt
+        run: |
+          python3 - <<'PYEOF'
+          import re, pathlib, sys
+
+          md_files = list(pathlib.Path(".").rglob("*.md"))
+          issues = []
+
+          # Matches ![](url) — empty alt text in Markdown syntax
+          empty_alt = re.compile(r'!\[\s*\]\([^)]+\)')
+          # Matches <img> tags that are missing the alt attribute entirely
+          img_missing_alt = re.compile(r'<img(?![^>]*\balt\s*=)[^>]*/?>',
+                                       re.IGNORECASE)
+          # Matches <img> tags with an explicitly empty alt attribute
+          img_empty_alt = re.compile(r'<img(?=[^>]*\balt\s*=\s*["\']["\'])[^>]*/?>',
+                                     re.IGNORECASE)
+
+          for md_file in md_files:
+              if '.git' in md_file.parts or 'node_modules' in md_file.parts:
+                  continue
+              text = md_file.read_text(encoding="utf-8", errors="replace")
+              for i, line in enumerate(text.splitlines(), 1):
+                  if empty_alt.search(line):
+                      issues.append(f"{md_file}:{i}: missing alt text on Markdown image")
+                  if img_missing_alt.search(line):
+                      issues.append(f"{md_file}:{i}: <img> tag missing alt attribute")
+                  if img_empty_alt.search(line):
+                      issues.append(f"{md_file}:{i}: <img> tag has empty alt — add a description or confirm the image is decorative")
+
+          if issues:
+              print("Alt-text issues found:")
+              for issue in issues:
+                  print(f"  ⚠  {issue}")
+              # Write summary for PR comment
+              with open("alt-text-issues.txt", "w") as f:
+                  f.write("\n".join(issues))
+              sys.exit(1)
+          else:
+              print("✅ All images have alt text.")
+          PYEOF
+        continue-on-error: true
+
+      - name: Comment alt-text issues on PR
+        if: github.event_name == 'pull_request' && steps.check_alt.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('alt-text-issues.txt')) return;
+            const issues = fs.readFileSync('alt-text-issues.txt', 'utf8').trim().split('\n');
+            const lines = issues.map(i => `- ${i}`).join('\n');
+            const body = `## ♿ Inclusive Documentation — Alt Text Check\n\n` +
+              `The following images are missing descriptive alt text:\n\n${lines}\n\n` +
+              `Please add alt text following the [contributor guide](docs/accessibility/contributor-guide.md).`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
+
+  generate-alt-text-stubs:
+    name: Generate Alt-Text Stubs for New Images
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Find newly added images
+        id: new_images
+        run: |
+          IMAGES=$(git diff --name-only HEAD~1 HEAD -- '*.png' '*.jpg' '*.jpeg' '*.gif' '*.svg' '*.webp' 2>/dev/null || true)
+          if [ -z "$IMAGES" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "images<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$IMAGES" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate alt-text stub file
+        if: steps.new_images.outputs.found == 'true'
+        run: |
+          python3 - <<'PYEOF'
+          import pathlib, datetime
+
+          images_raw = """${{ steps.new_images.outputs.images }}""".strip()
+          images = [i.strip() for i in images_raw.splitlines() if i.strip()]
+
+          stub_dir = pathlib.Path("docs/accessibility/alt-text-stubs")
+          stub_dir.mkdir(parents=True, exist_ok=True)
+          date_str = datetime.date.today().isoformat()
+          stub_file = stub_dir / f"alt-text-{date_str}.md"
+
+          lines = [f"# Alt-Text Stubs — {date_str}\n",
+                   "These images were added and need descriptive alt text.\n",
+                   "Edit this file and add your descriptions, then update the Markdown source files.\n\n"]
+          for img in images:
+              lines.append(f"## `{img}`\n\n**Alt text:** _TODO — describe the image in one or two sentences._\n\n")
+
+          stub_file.write_text("".join(lines), encoding="utf-8")
+          print(f"Created: {stub_file}")
+          PYEOF
+
+      - name: Commit alt-text stub
+        if: steps.new_images.outputs.found == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/accessibility/alt-text-stubs/ || true
+          git diff --cached --quiet || git commit -m "chore(accessibility): add alt-text stubs for new images [skip ci]"
+          git push || true
+
+  validate-docs-template:
+    name: Validate Documentation Accessibility Template
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check heading hierarchy in Markdown files
+        run: |
+          python3 - <<'PYEOF'
+          import re, pathlib, sys
+
+          issues = []
+          for md_file in pathlib.Path(".").rglob("*.md"):
+              if '.git' in md_file.parts or 'node_modules' in md_file.parts:
+                  continue
+              text = md_file.read_text(encoding="utf-8", errors="replace")
+              prev_level = 0
+              for i, line in enumerate(text.splitlines(), 1):
+                  m = re.match(r'^(#{1,6})\s', line)
+                  if m:
+                      level = len(m.group(1))
+                      if prev_level > 0 and level > prev_level + 1:
+                          issues.append(
+                              f"{md_file}:{i}: heading jumps from H{prev_level} to H{level} "
+                              f"(skipped levels hurt screen-reader navigation)"
+                          )
+                      prev_level = level
+
+          if issues:
+              print("Heading hierarchy issues (accessibility concern):")
+              for issue in issues:
+                  print(f"  ⚠  {issue}")
+              # Warn but do not fail — this is advisory
+          else:
+              print("✅ Heading hierarchy looks good.")
+          PYEOF

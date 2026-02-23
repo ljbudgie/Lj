@@ -1,0 +1,119 @@
+name: Speech-to-Text Transcription
+
+on:
+  push:
+    paths:
+      - 'audio/**'
+      - '**.mp3'
+      - '**.wav'
+      - '**.m4a'
+      - '**.ogg'
+      - '**.flac'
+  workflow_dispatch:
+    inputs:
+      audio_path:
+        description: 'Path to audio file or directory to transcribe'
+        required: false
+        default: 'audio/'
+      language:
+        description: 'Language code (e.g. en, es, fr) — leave blank for auto-detect'
+        required: false
+        default: ''
+      model:
+        description: 'Whisper model size (tiny, base, small, medium, large)'
+        required: false
+        default: 'base'
+
+permissions:
+  contents: write
+
+jobs:
+  transcribe:
+    name: Transcribe Audio Files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install OpenAI Whisper
+        run: |
+          pip install --upgrade pip
+          pip install openai-whisper
+
+      - name: Install FFmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Discover audio files
+        id: find_audio
+        run: |
+          AUDIO_PATH="${{ github.event.inputs.audio_path || 'audio/' }}"
+          FILES=$(find "$AUDIO_PATH" -type f \( \
+            -iname '*.mp3' -o -iname '*.wav' -o \
+            -iname '*.m4a' -o -iname '*.ogg' -o \
+            -iname '*.flac' \) 2>/dev/null | head -50 || true)
+            # Note: limited to 50 files per run to keep CI duration reasonable.
+            # Increase the head -50 limit for repositories with large audio collections.
+          if [ -z "$FILES" ]; then
+            echo "No audio files found in $AUDIO_PATH — skipping transcription."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "files<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$FILES" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Transcribe audio files
+        if: steps.find_audio.outputs.found == 'true'
+        env:
+          WHISPER_MODEL: ${{ github.event.inputs.model || 'base' }}
+          WHISPER_LANGUAGE: ${{ github.event.inputs.language || '' }}
+        run: |
+          python - <<'PYEOF'
+          import os, subprocess, pathlib, sys
+
+          model = os.environ.get("WHISPER_MODEL", "base")
+          language = os.environ.get("WHISPER_LANGUAGE", "").strip()
+          files = """${{ steps.find_audio.outputs.files }}""".strip().splitlines()
+
+          out_dir = pathlib.Path("transcriptions")
+          out_dir.mkdir(exist_ok=True)
+
+          for audio_file in files:
+              audio_file = audio_file.strip()
+              if not audio_file:
+                  continue
+              stem = pathlib.Path(audio_file).stem
+              print(f"Transcribing: {audio_file}")
+              cmd = ["whisper", audio_file, "--model", model, "--output_dir", str(out_dir), "--output_format", "txt"]
+              if language:
+                  cmd += ["--language", language]
+              result = subprocess.run(cmd, capture_output=True, text=True)
+              if result.returncode != 0:
+                  print(f"ERROR transcribing {audio_file}:\n{result.stderr}", file=sys.stderr)
+              else:
+                  print(f"Done: transcriptions/{stem}.txt")
+          PYEOF
+
+      - name: Upload transcription artifacts
+        if: steps.find_audio.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcriptions
+          path: transcriptions/
+          if-no-files-found: ignore
+
+      - name: Commit transcriptions to repository
+        if: steps.find_audio.outputs.found == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add transcriptions/ || true
+          git diff --cached --quiet || git commit -m "chore(accessibility): add auto-generated transcriptions [skip ci]"
+          git push || true
