@@ -1,0 +1,70 @@
+name: "📣 Call for Contributors"
+description: >
+  Use this template to invite passionate contributors to a specific area of
+  Clawbot. Pre-filled with the community invitation text — edit as needed.
+title: "Call for Passionate Contributors: Help Build the Limitless Clawbot Ecosystem"
+labels:
+  - "help wanted"
+  - "good first issue"
+  - "enhancement"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🌟 Clawbot's Vision
+
+        **Clawbot** is a limitless, open-source toolkit for accessibility, AI collaboration,
+        and global empowerment, rooted in **The Burgess Principle** — the conviction that
+        technology should serve everyone, especially those the mainstream has overlooked.
+
+        ---
+
+        ### Current Features
+
+        | Feature | Description |
+        |---|---|
+        | 🗣️ Speech-to-Text | Voice-driven accessibility automation |
+        | ♿ WCAG Testing | Automated accessibility compliance on every PR |
+        | 🎮 Gamified contributions | Badges for accessibility-first PRs |
+        | 🌐 Multilingual docs | DeepL-powered translation workflows |
+        | 📖 Braille export | BRF export for tactile displays |
+        | 🤖 AI health checks | Daily endpoint monitoring |
+        | 🔄 Self-healing workflows | Automatic failure detection and retry |
+
+  - type: textarea
+    id: contribution_area
+    attributes:
+      label: "Area of contribution"
+      description: >
+        Which part of Clawbot do you want to improve?
+        Examples: quantum computing backend, blockchain governance,
+        crisis-response alerting, haptic feedback, edge AI.
+      placeholder: "e.g. Add quantum-safe cryptography to the dependency-update workflow"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "Describe your idea"
+      description: "What would you like to build or improve? Be as detailed or as high-level as you like."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: get_started
+    attributes:
+      label: "Getting started checklist"
+      options:
+        - label: "I have read [CONTRIBUTING.md](../../blob/main/CONTRIBUTING.md)"
+        - label: "I have reviewed open PRs [#4](../../pull/4) and [#5](../../pull/5)"
+        - label: "I have checked existing issues to avoid duplicates"
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        💙 Contributors with deep focus and unique life experiences are especially
+        welcome. Every perspective makes Clawbot more limitless.
+
+        See [CONTRIBUTING.md](../../blob/main/CONTRIBUTING.md) for full details on how to get started.
