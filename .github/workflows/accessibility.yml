@@ -1,0 +1,223 @@
+name: Clawbot – Accessibility
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'README.md'
+      - 'config/clawbot.yml'
+  workflow_dispatch:
+    inputs:
+      run_translation:
+        description: 'Run multilingual translation'
+        required: false
+        default: 'true'
+      run_braille:
+        description: 'Export Braille-ready format'
+        required: false
+        default: 'true'
+
+jobs:
+  ai-adaptations:
+    name: AI-Powered Accessibility Adaptations
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load Clawbot configuration
+        id: config
+        run: |
+          echo "Reading accessibility settings from config/clawbot.yml"
+          python3 - <<'EOF'
+          import yaml, json, os
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+          acc = cfg.get("accessibility", {}).get("ai_adaptations", {})
+          print("AI Adaptations enabled:", acc.get("enabled", False))
+          profiles = acc.get("profiles", {})
+          for name, settings in profiles.items():
+              print(f"  Profile '{name}': {settings}")
+          EOF
+
+      - name: Validate accessibility profiles
+        run: |
+          python3 - <<'EOF'
+          import yaml, sys
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+          profiles = cfg["accessibility"]["ai_adaptations"]["profiles"]
+          required = ["visual_impairment", "motor_impairment", "cognitive", "default"]
+          missing = [p for p in required if p not in profiles]
+          if missing:
+              print(f"ERROR: Missing accessibility profiles: {missing}", file=sys.stderr)
+              sys.exit(1)
+          print("All required accessibility profiles present.")
+          EOF
+
+  multilingual-translation:
+    name: Multilingual Documentation Translation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_translation == 'true' || github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Prepare translation output directories
+        run: |
+          python3 - <<'EOF'
+          import yaml, os
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+          output = cfg["accessibility"]["multilingual"]["translation_output"]
+          langs = cfg["accessibility"]["multilingual"]["target_languages"]
+          for lang in langs:
+              os.makedirs(os.path.join(output, lang), exist_ok=True)
+          print(f"Created translation directories for: {langs}")
+          EOF
+
+      - name: Generate translation stubs
+        env:
+          DEEPL_API_KEY: ${{ secrets.DEEPL_API_KEY }}
+        run: |
+          python3 - <<'EOF'
+          import yaml, os, json
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+          ml = cfg["accessibility"]["multilingual"]
+          docs_path = ml["docs_path"]
+          output_path = ml["translation_output"]
+          source_lang = ml["source_language"]
+          target_langs = ml["target_languages"]
+
+          # Collect source documents
+          source_docs = []
+          for root, dirs, files in os.walk(docs_path):
+              for fname in files:
+                  if fname.endswith(".md"):
+                      source_docs.append(os.path.join(root, fname))
+          if os.path.exists("README.md"):
+              source_docs.append("README.md")
+
+          api_key = os.environ.get("DEEPL_API_KEY", "")
+          for lang in target_langs:
+              for doc in source_docs:
+                  basename = os.path.basename(doc)
+                  dest = os.path.join(output_path, lang, basename)
+                  os.makedirs(os.path.dirname(dest), exist_ok=True)
+                  if api_key:
+                      # Real DeepL call would go here
+                      print(f"[DeepL] Would translate {doc} -> {dest} ({source_lang} -> {lang})")
+                  else:
+                      # Write stub for CI without credentials
+                      with open(doc) as src_f:
+                          content = src_f.read()
+                      stub = f"<!-- Translation stub: {source_lang} -> {lang} -->\n{content}"
+                      with open(dest, "w") as dst_f:
+                          dst_f.write(stub)
+                      print(f"[stub] {doc} -> {dest}")
+          print("Translation step complete.")
+          EOF
+
+      - name: Upload translation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: translations
+          path: docs/translations/
+          if-no-files-found: warn
+
+  braille-export:
+    name: Braille-Ready Documentation Export
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_braille == 'true' || github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Prepare Braille output directory
+        run: |
+          python3 - <<'EOF'
+          import yaml, os
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+          output = cfg["accessibility"]["braille"]["output_path"]
+          os.makedirs(output, exist_ok=True)
+          print(f"Braille output directory: {output}")
+          EOF
+
+      - name: Export docs to Braille-ready format (BRF stubs)
+        run: |
+          python3 - <<'EOF'
+          import yaml, os, re
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+          braille_cfg = cfg["accessibility"]["braille"]
+          output_path = braille_cfg["output_path"]
+          grade = braille_cfg["grade"]
+
+          def markdown_to_plain(text):
+              """Strip Markdown formatting for Braille conversion."""
+              text = re.sub(r'#{1,6}\s+', '', text)
+              text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+              text = re.sub(r'\*(.+?)\*', r'\1', text)
+              text = re.sub(r'`(.+?)`', r'\1', text)
+              text = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', text)
+              text = re.sub(r'^\s*[-*+]\s+', '  ', text, flags=re.MULTILINE)
+              return text
+
+          def plain_to_brf_stub(text, grade=2):
+              """
+              Stub: produce a BRF-like header + plain text block.
+              A production implementation would use liblouis or similar.
+              """
+              header = f"BRF GRADE {grade} EXPORT\n" + "=" * 40 + "\n"
+              return header + text
+
+          docs = ["README.md"]
+          for root, dirs, files in os.walk("docs"):
+              for fname in files:
+                  if fname.endswith(".md"):
+                      docs.append(os.path.join(root, fname))
+
+          for doc in docs:
+              if not os.path.exists(doc):
+                  continue
+              with open(doc) as f:
+                  content = f.read()
+              plain = markdown_to_plain(content)
+              brf = plain_to_brf_stub(plain, grade=grade)
+              out_name = os.path.splitext(os.path.basename(doc))[0] + ".brf"
+              out_path = os.path.join(output_path, out_name)
+              with open(out_path, "w") as f:
+                  f.write(brf)
+              print(f"Exported: {doc} -> {out_path}")
+          print("Braille export complete.")
+          EOF
+
+      - name: Upload Braille artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: braille-exports
+          path: docs/braille/
+          if-no-files-found: warn

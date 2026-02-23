@@ -1,0 +1,112 @@
+name: Clawbot – Dependency & Workflow Updates
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'    # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check-action-versions:
+    name: Check GitHub Actions for Updates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Scan workflow files for outdated actions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'EOF'
+          import os, re, yaml, requests
+
+          token = os.environ.get("GITHUB_TOKEN", "")
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          workflow_dir = ".github/workflows"
+          action_pattern = re.compile(r'uses:\s+([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)@([^\s]+)')
+
+          outdated = []
+          for fname in os.listdir(workflow_dir):
+              if not fname.endswith((".yml", ".yaml")):
+                  continue
+              fpath = os.path.join(workflow_dir, fname)
+              with open(fpath) as f:
+                  content = f.read()
+              for match in action_pattern.finditer(content):
+                  action, pinned_version = match.group(1), match.group(2)
+                  if pinned_version.startswith("v"):
+                      # Check latest release
+                      resp = requests.get(
+                          f"https://api.github.com/repos/{action}/releases/latest",
+                          headers=headers, timeout=10
+                      )
+                      if resp.ok:
+                          latest = resp.json().get("tag_name", "")
+                          if latest and latest != pinned_version:
+                              outdated.append({
+                                  "file": fname,
+                                  "action": action,
+                                  "current": pinned_version,
+                                  "latest": latest,
+                              })
+
+          if outdated:
+              print("[Clawbot] Outdated actions found:")
+              for item in outdated:
+                  print(f"  {item['file']}: {item['action']} {item['current']} -> {item['latest']}")
+          else:
+              print("[Clawbot] All actions are up to date.")
+          EOF
+
+  validate-config:
+    name: Validate Clawbot Configuration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Validate clawbot.yml schema
+        run: |
+          python3 - <<'EOF'
+          import yaml, sys
+
+          required_sections = [
+              "accessibility",
+              "ai_collaboration",
+              "automation",
+              "contribution_pipeline",
+              "ecosystem",
+          ]
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          missing = [s for s in required_sections if s not in cfg]
+          if missing:
+              print(f"ERROR: config/clawbot.yml is missing sections: {missing}", file=sys.stderr)
+              sys.exit(1)
+
+          print("config/clawbot.yml is valid.")
+          for section in required_sections:
+              print(f"  ✓ {section}")
+          EOF

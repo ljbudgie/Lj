@@ -1,0 +1,113 @@
+name: Clawbot – Reputation & Leaderboard
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: '0 0 * * 0'    # Weekly on Sundays at midnight UTC
+  workflow_dispatch:
+
+jobs:
+  update-reputation:
+    name: Update Contributor Reputation
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    permissions:
+      contents: write
+      pull-requests: read
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml requests
+
+      - name: Calculate and update reputation scores
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import os, json, requests, yaml
+          from collections import defaultdict
+
+          with open("config/clawbot.yml") as f:
+              cfg = yaml.safe_load(f)
+
+          rep_cfg = cfg["ecosystem"]["reputation"]
+          if not rep_cfg.get("enabled", False):
+              print("Reputation system disabled.")
+              exit(0)
+
+          scoring = rep_cfg.get("scoring", {})
+          leaderboard_size = rep_cfg.get("leaderboard_size", 10)
+
+          token = os.environ.get("GITHUB_TOKEN", "")
+          repo = os.environ.get("REPO", "")
+          headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+
+          scores = defaultdict(int)
+
+          # Score merged PRs
+          page = 1
+          while True:
+              resp = requests.get(
+                  f"https://api.github.com/repos/{repo}/pulls"
+                  f"?state=closed&per_page=100&page={page}",
+                  headers=headers, timeout=15
+              )
+              if not resp.ok or not resp.json():
+                  break
+              prs = resp.json()
+              if not prs:
+                  break
+              for pr in prs:
+                  if not pr.get("merged_at"):
+                      continue
+                  author = pr.get("user", {}).get("login", "unknown")
+                  scores[author] += scoring.get("merged_pr", 10)
+                  # Check for accessibility/translation badges via labels
+                  label_names = [l["name"] for l in pr.get("labels", [])]
+                  if "♿ Accessibility Champion" in label_names:
+                      scores[author] += scoring.get("accessibility_pr", 25) - scoring.get("merged_pr", 10)
+                  if "🌐 Multilingual Hero" in label_names:
+                      scores[author] += scoring.get("translation_pr", 20) - scoring.get("merged_pr", 10)
+              page += 1
+              if len(prs) < 100:
+                  break
+
+          # Build leaderboard
+          leaderboard = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:leaderboard_size]
+
+          # Write leaderboard to docs
+          os.makedirs("docs", exist_ok=True)
+          with open("docs/leaderboard.md", "w") as f:
+              f.write("# 🏆 Clawbot Contributor Leaderboard\n\n")
+              f.write("| Rank | Contributor | Score |\n")
+              f.write("|------|-------------|-------|\n")
+              for rank, (contributor, score) in enumerate(leaderboard, 1):
+                  medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"#{rank}")
+                  f.write(f"| {medal} | @{contributor} | {score} |\n")
+              f.write(f"\n_Last updated by Clawbot._\n")
+
+          print(f"[Clawbot] Leaderboard updated ({len(leaderboard)} contributors).")
+          for rank, (c, s) in enumerate(leaderboard, 1):
+              print(f"  {rank}. {c}: {s} pts")
+          EOF
+
+      - name: Commit updated leaderboard
+        run: |
+          git config user.name "clawbot[bot]"
+          git config user.email "clawbot[bot]@users.noreply.github.com"
+          git add docs/leaderboard.md
+          if git diff --cached --quiet; then
+            echo "No leaderboard changes."
+          else
+            git commit -m "chore(reputation): update contributor leaderboard [skip ci]"
+            git push
+          fi
