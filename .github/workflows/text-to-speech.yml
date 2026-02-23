@@ -1,0 +1,200 @@
+name: Text-to-Speech Documentation
+
+on:
+  push:
+    paths:
+      - 'docs/**/*.md'
+      - 'docs/**/*.txt'
+      - 'README.md'
+  workflow_dispatch:
+    inputs:
+      file_path:
+        description: 'Path to a specific Markdown or text file to convert'
+        required: false
+        default: 'README.md'
+      provider:
+        description: 'TTS provider to use (gtts | polly)'
+        required: false
+        default: 'gtts'
+      language:
+        description: 'BCP-47 language tag (e.g. en, es-es, fr)'
+        required: false
+        default: 'en'
+
+permissions:
+  contents: write
+
+jobs:
+  generate-audio:
+    name: Generate Audio Versions of Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install TTS dependencies
+        run: |
+          pip install --upgrade pip
+          pip install gTTS
+          # boto3 is available for Amazon Polly when AWS credentials are configured
+          pip install boto3 || true
+
+      - name: Install FFmpeg (for audio post-processing)
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Discover documentation files
+        id: find_docs
+        run: |
+          FILE_PATH="${{ github.event.inputs.file_path }}"
+          if [ -n "$FILE_PATH" ] && [ -f "$FILE_PATH" ]; then
+            echo "files=$FILE_PATH" >> "$GITHUB_OUTPUT"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            FILES=$(find docs/ README.md -type f \( -iname '*.md' -o -iname '*.txt' \) 2>/dev/null | head -20 || true)
+            if [ -z "$FILES" ]; then
+              echo "found=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "found=true" >> "$GITHUB_OUTPUT"
+              echo "files<<EOF" >> "$GITHUB_OUTPUT"
+              echo "$FILES" >> "$GITHUB_OUTPUT"
+              echo "EOF" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Convert documentation to speech (gTTS)
+        if: |
+          steps.find_docs.outputs.found == 'true' &&
+          (github.event.inputs.provider == '' || github.event.inputs.provider == 'gtts')
+        env:
+          TTS_LANGUAGE: ${{ github.event.inputs.language || 'en' }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, re, pathlib, sys
+          from gtts import gTTS
+
+          # gTTS works best with inputs under ~5000 chars; 4500 leaves room for
+          # overhead. Increase if longer single-chunk audio is acceptable.
+          GTTS_CHAR_LIMIT = 4500
+          language = os.environ.get("TTS_LANGUAGE", "en").split("-")[0]  # gTTS uses 2-letter codes
+          files_raw = """${{ steps.find_docs.outputs.files }}""".strip()
+          files = [f.strip() for f in files_raw.splitlines() if f.strip()]
+
+          out_dir = pathlib.Path("audio-docs")
+          out_dir.mkdir(exist_ok=True)
+
+          def strip_markdown(text):
+              # Remove code blocks
+              text = re.sub(r'```[\s\S]*?```', ' ', text)
+              text = re.sub(r'`[^`]+`', ' ', text)
+              # Remove headings markers, bold, italics, links
+              text = re.sub(r'#{1,6}\s?', '', text)
+              text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
+              text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+              text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'Image: \1', text)
+              # Remove HTML tags
+              text = re.sub(r'<[^>]+>', '', text)
+              return text.strip()
+
+          for doc_file in files:
+              p = pathlib.Path(doc_file)
+              if not p.exists():
+                  print(f"File not found, skipping: {doc_file}")
+                  continue
+              raw_text = p.read_text(encoding="utf-8", errors="replace")
+              clean_text = strip_markdown(raw_text)
+              if not clean_text:
+                  print(f"Empty after stripping, skipping: {doc_file}")
+                  continue
+              out_file = out_dir / (p.stem + ".mp3")
+              print(f"Converting {doc_file} -> {out_file}")
+              try:
+                  tts = gTTS(text=clean_text[:GTTS_CHAR_LIMIT], lang=language, slow=False)
+                  tts.save(str(out_file))
+                  print(f"Saved: {out_file}")
+              except Exception as e:
+                  print(f"ERROR: {e}", file=sys.stderr)
+          PYEOF
+
+      - name: Convert documentation to speech (Amazon Polly)
+        if: |
+          steps.find_docs.outputs.found == 'true' &&
+          github.event.inputs.provider == 'polly'
+        env:
+          TTS_LANGUAGE: ${{ github.event.inputs.language || 'en' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, re, pathlib, sys
+          try:
+              import boto3
+          except ImportError:
+              print("boto3 not available — skipping Polly conversion.")
+              sys.exit(0)
+
+          # Amazon Polly's SynthesizeSpeech supports up to 3000 characters for
+          # standard voices. Use 2900 to leave a small safety margin.
+          POLLY_CHAR_LIMIT = 2900
+
+          files_raw = """${{ steps.find_docs.outputs.files }}""".strip()
+          files = [f.strip() for f in files_raw.splitlines() if f.strip()]
+          language = os.environ.get("TTS_LANGUAGE", "en-US")
+          out_dir = pathlib.Path("audio-docs")
+          out_dir.mkdir(exist_ok=True)
+
+          polly = boto3.client("polly")
+
+          def strip_markdown(text):
+              text = re.sub(r'```[\s\S]*?```', ' ', text)
+              text = re.sub(r'`[^`]+`', ' ', text)
+              text = re.sub(r'#{1,6}\s?', '', text)
+              text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
+              text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+              text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'Image: \1', text)
+              text = re.sub(r'<[^>]+>', '', text)
+              return text.strip()
+
+          for doc_file in files:
+              p = pathlib.Path(doc_file)
+              if not p.exists():
+                  continue
+              clean_text = strip_markdown(p.read_text(encoding="utf-8", errors="replace"))
+              if not clean_text:
+                  continue
+              out_file = out_dir / (p.stem + ".mp3")
+              print(f"Converting {doc_file} -> {out_file} via Amazon Polly")
+              try:
+                  response = polly.synthesize_speech(
+                      Text=clean_text[:POLLY_CHAR_LIMIT],
+                      OutputFormat="mp3",
+                      VoiceId="Joanna",
+                      LanguageCode=language,
+                  )
+                  out_file.write_bytes(response["AudioStream"].read())
+                  print(f"Saved: {out_file}")
+              except Exception as e:
+                  print(f"ERROR: {e}", file=sys.stderr)
+          PYEOF
+
+      - name: Upload audio artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-documentation
+          path: audio-docs/
+          if-no-files-found: ignore
+
+      - name: Commit audio files to repository
+        if: steps.find_docs.outputs.found == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add audio-docs/ || true
+          git diff --cached --quiet || git commit -m "chore(accessibility): add auto-generated audio documentation [skip ci]"
+          git push || true
