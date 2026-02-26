@@ -58,6 +58,23 @@ Every decision in Clawbot is guided by The Burgess Principle: tooling should nev
 
 ---
 
+## Data Sovereignty
+
+> *Your data belongs to you — always, everywhere, without exception.*
+
+Clawbot is built on an uncompromising commitment to data sovereignty. This means:
+
+- 🛡️ **Individual Sovereignty** — Every person's data is their own. No workflow, integration, or automation in this project collects, retains, or transmits personal data without explicit, informed consent.
+- 🌍 **Community Ownership** — All outputs, artifacts, and knowledge generated through Clawbot belong to the community that created them. Nothing is siloed in proprietary systems; everything lives in the open repository, accessible to all.
+- 🔓 **Provider-Agnostic by Design** — Clawbot deliberately avoids hard dependencies on any single vendor, platform, or cloud provider. Every tool can be swapped, self-hosted, or run entirely offline. You are never locked in.
+- 📦 **Full Portability** — Data, configurations, and workflows are stored in open, standard formats. Export, migrate, or fork everything at any time with zero friction.
+- 🌐 **Global Empowerment** — Accessibility and sovereignty are not regional privileges. This project is designed so that contributors anywhere in the world—regardless of language, infrastructure, or resources—can participate fully and own their work.
+- 🚫 **No Proprietary Lock-Ins** — There are no hidden API dependencies, no vendor-exclusive features, and no paywalls between you and the full capability of this toolkit. What you see is what you own.
+
+These principles are not aspirational—they are enforced through architecture. Every feature addition is evaluated against them. If a change would compromise data sovereignty, it does not ship.
+
+---
+
 ## License
 
 This project is open-source. See [LICENSE](LICENSE) for details.
